@@ -24,8 +24,8 @@ import io.github.cdimascio.dotenv.Dotenv;
 import io.javalin.Javalin;
 import io.javalin.websocket.WsContext;
 
-import org.eclipse.jetty.websocket.api.Callback;
 import org.eclipse.jetty.websocket.api.Session;
+import org.eclipse.jetty.websocket.api.StatusCode;
 import org.eclipse.jetty.websocket.api.annotations.*;
 import org.eclipse.jetty.websocket.client.ClientUpgradeRequest;
 import org.eclipse.jetty.websocket.client.WebSocketClient;
@@ -86,7 +86,8 @@ public class App {
      * Exits with a helpful message if a required variable is missing.
      */
     private static String getRequiredEnv(String key) {
-        String value = dotenv.get(key, System.getenv(key));
+        String sysEnv = System.getenv(key);
+        String value = sysEnv != null ? dotenv.get(key, sysEnv) : dotenv.get(key);
         if (value == null || value.isBlank()) {
             System.err.println("ERROR: " + key + " environment variable is required");
             System.err.println("Please copy sample.env to .env and add your API key");
@@ -99,7 +100,8 @@ public class App {
      * Gets an environment variable with a default fallback.
      */
     private static String getEnv(String key, String defaultValue) {
-        String value = dotenv.get(key, System.getenv(key));
+        String sysEnv = System.getenv(key);
+        String value = sysEnv != null ? dotenv.get(key, sysEnv) : dotenv.get(key);
         return (value != null && !value.isBlank()) ? value : defaultValue;
     }
 
@@ -201,7 +203,7 @@ public class App {
             this.clientCtx = clientCtx;
         }
 
-        @OnWebSocketOpen
+        @OnWebSocketConnect
         public void onOpen(Session session) {
             System.out.println("Connected to Deepgram TTS API");
             deepgramSessions.put(clientCtx, session);
@@ -216,14 +218,13 @@ public class App {
         }
 
         @OnWebSocketMessage
-        public void onBinaryMessage(Session session, ByteBuffer buffer, Callback callback) {
+        public void onBinaryMessage(byte[] payload, int offset, int len) {
             // Forward binary audio data from Deepgram to client
             if (clientCtx.session.isOpen()) {
-                byte[] data = new byte[buffer.remaining()];
-                buffer.get(data);
+                byte[] data = new byte[len];
+                System.arraycopy(payload, offset, data, 0, len);
                 clientCtx.send(ByteBuffer.wrap(data));
             }
-            callback.succeed();
         }
 
         @OnWebSocketError
@@ -378,7 +379,7 @@ public class App {
                 // Forward text messages from client to Deepgram
                 Session deepgramSession = deepgramSessions.get(ctx);
                 if (deepgramSession != null && deepgramSession.isOpen()) {
-                    deepgramSession.sendText(ctx.message(), Callback.NOOP);
+                    deepgramSession.getRemote().sendString(ctx.message());
                 }
             });
 
@@ -391,7 +392,7 @@ public class App {
                     int length = ctx.length();
                     byte[] bytes = new byte[length];
                     System.arraycopy(data, offset, bytes, 0, length);
-                    deepgramSession.sendBinary(ByteBuffer.wrap(bytes), Callback.NOOP);
+                    deepgramSession.getRemote().sendBytes(ByteBuffer.wrap(bytes));
                 }
             });
 
@@ -402,7 +403,7 @@ public class App {
                 // Close the upstream Deepgram connection
                 Session deepgramSession = deepgramSessions.remove(ctx);
                 if (deepgramSession != null && deepgramSession.isOpen()) {
-                    deepgramSession.close(org.eclipse.jetty.websocket.api.CloseStatus.NORMAL, "Client disconnected", Callback.NOOP);
+                    deepgramSession.close(StatusCode.NORMAL, "Client disconnected");
                 }
             });
 
@@ -412,7 +413,7 @@ public class App {
                 // Close the upstream Deepgram connection on client error
                 Session deepgramSession = deepgramSessions.remove(ctx);
                 if (deepgramSession != null && deepgramSession.isOpen()) {
-                    deepgramSession.close(org.eclipse.jetty.websocket.api.CloseStatus.NORMAL, "Client error", Callback.NOOP);
+                    deepgramSession.close(StatusCode.NORMAL, "Client error");
                 }
             });
         });
@@ -440,7 +441,7 @@ public class App {
             for (Session session : deepgramSessions.values()) {
                 try {
                     if (session.isOpen()) {
-                        session.close(org.eclipse.jetty.websocket.api.CloseStatus.NORMAL, "Server shutting down", Callback.NOOP);
+                        session.close(StatusCode.NORMAL, "Server shutting down");
                     }
                 } catch (Exception e) {
                     System.err.println("Error closing Deepgram session: " + e.getMessage());
